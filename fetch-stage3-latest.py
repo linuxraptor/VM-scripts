@@ -13,8 +13,6 @@ import pycurl
 from io import BytesIO
 
 description = 'Download latest Gentoo Stage3 to a given directory.'
-# MIRROR = ("http://mirror.facebook.net/"
-#           "gentoo/releases/amd64/autobuilds/")
 # Use what is here to implement retrys.
 MIRRORS = ['http://mirror.facebook.net/gentoo/',
            'http://gentoo.mirrors.tds.net/gentoo',
@@ -25,7 +23,7 @@ MIRRORS = ['http://mirror.facebook.net/gentoo/',
 RELEASE_DIR = 'releases/amd64/autobuilds/'
 CURRENT_VER = "latest-stage3-amd64-hardened.txt"
 
-MIRROR = str(MIRRORS[2] + RELEASE_DIR)
+MIRROR = str(MIRRORS[0] + RELEASE_DIR)
 
 # TODO: Download .DIGESTS, verify checksum with built-in hashlib
 
@@ -59,6 +57,7 @@ class DownloadManager(object):
 
   def __init__(self):
     self.download_file = ''
+    self.old_total_downloaded = 0
 
   def FindStage3(self):
     self.url = str(MIRROR + CURRENT_VER)
@@ -76,7 +75,7 @@ class DownloadManager(object):
     self.url = self.FindStage3()
     self.filename = self.url.split('/')[-1]
     self.download_file = working_dir + '/' + self.filename
-    self.destination = open(self.download_file, 'wb')
+    self.destination = 'filehandle'
     self._Curl()
     if self.destination:
       self.destination.close()
@@ -90,12 +89,36 @@ class DownloadManager(object):
 
     def _ShowProgress(total_to_download, total_downloaded, *args, **kwargs):
       if total_to_download:
-        time.sleep(0.5)
+        # SYNCHRONOUS?! ARE YOU SERIOUS?!
+        # Use a threader to spawn a new thread here so pycurl doen't
+        # end up JUST WAITING ON THIS COSMETIC METHOD. SERIOUSLY.
+        # time.sleep(0.5)
+        # if self.old_total_downloaded > 0:
+        #   bytes_per_second = (total_downloaded/self.old_total_downloaded) * 2
+        #   speed = _Humanize(bytes_per_second)
+        # else:
+        #   speed = '0 B/s'
+        self.old_total_downloaded = total_downloaded
         percent_completed = float(total_downloaded)/total_to_download
-        rate = round(percent_completed * 100, ndigits=2)
-        sys.stdout.write('%s%%\r' % rate)
+        formatted_percent = format(round((percent_completed * 100),
+                                   ndigits=2), '.2f')
+        # progress = ('%s%%  %s   \r' % (formatted_percent, speed))
+        progress = ('%s%%   \r' % formatted_percent)
+        sys.stdout.write(progress)
         sys.stdout.flush()
 
+    def _Humanize(bps):
+      mbps = round(((bps / (1024**2)) * 8), ndigits=1)
+      if mbps >= 1:
+        return (str(mbps) + ' Mb/s')
+      kbps = round(((bps / 1024) * 8), ndigits=1)
+      if kbps >= 1:
+        return (str(kbps) + ' Kb/s')
+      bps = round(bps, ndigits=1)
+      return (str(bps) + ' B/s')
+
+    if self.destination == 'filehandle':
+      download_file = open(self.download_file, 'wb')
     curl_handle = pycurl.Curl()
     curl_handle.setopt(pycurl.FOLLOWLOCATION, 1)
     curl_handle.setopt(pycurl.MAXREDIRS, 5)
@@ -103,12 +126,14 @@ class DownloadManager(object):
     curl_handle.setopt(pycurl.TIMEOUT, 300)
     curl_handle.setopt(pycurl.NOSIGNAL, 1)
     try:
-      curl_handle.setopt(pycurl.WRITEDATA, self.destination)
       curl_handle.setopt(pycurl.URL, self.url)
       if self.download_file:
+        curl_handle.setopt(pycurl.WRITEDATA, download_file)
         curl_handle.setopt(pycurl.NOPROGRESS, 0)
         curl_handle.setopt(pycurl.PROGRESSFUNCTION, _ShowProgress)
         print("Downloading %s:" % self.filename)
+      else:
+        curl_handle.setopt(pycurl.WRITEDATA, self.destination)
       curl_handle.perform()
     except pycurl.error as e:
       _CurlCleanup()
