@@ -67,9 +67,7 @@ class DownloadManager(object):
     self._Curl()
     response = self.destination.getvalue()
     ascii_response = response.decode()
-    for line in ascii_response.splitlines():
-      if '#' not in line:
-        stage3_location = line.split(' ')[0]
+    stage3_location = ascii_response.splitlines()[-1].split(' ')[0]
     url = (MIRROR + stage3_location)
     return url
 
@@ -147,6 +145,8 @@ class DownloadManager(object):
         return
       raise CurlError('Download failed: ', e)
     http_code = curl_handle.getinfo(pycurl.HTTP_CODE)
+    # if http_code >= 400
+      # try another server. use a retry code.
     if http_code < 200 or http_code >= 300:
       raise CurlError('Received HTTP error code: ', http_code)
       _CurlCleanup()
