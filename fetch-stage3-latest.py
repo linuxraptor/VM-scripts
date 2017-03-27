@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 from __future__ import absolute_import
 from __future__ import print_function
@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import argparse
+import threading
 import pycurl
 from io import BytesIO
 
@@ -58,6 +59,7 @@ class DownloadManager(object):
   def __init__(self):
     self.download_file = ''
     self.old_total_downloaded = 0
+    self.systime = 0
 
   def FindStage3(self):
     self.url = str(MIRROR + CURRENT_VER)
@@ -87,31 +89,33 @@ class DownloadManager(object):
         os.remove(self.download_file)
       self.destination = None
 
-    def _ShowProgress(total_to_download, total_downloaded, *args, **kwargs):
+    def _SpawnProgress(total_to_download, total_downloaded, *args, **kwargs):
+      current_time = int(time.time())
+      if current_time != self.systime:
+        self.systime = current_time
+        threading.Thread(target=
+            _ShowProgress(total_to_download, total_downloaded)).start()
+
+    def _ShowProgress(total_to_download, total_downloaded):
       if total_to_download:
-        # SYNCHRONOUS?! ARE YOU SERIOUS?!
-        # Use a threader to spawn a new thread here so pycurl doen't
-        # end up JUST WAITING ON THIS COSMETIC METHOD. SERIOUSLY.
-        # time.sleep(0.5)
-        # if self.old_total_downloaded > 0:
-        #   bytes_per_second = (total_downloaded/self.old_total_downloaded) * 2
-        #   speed = _Humanize(bytes_per_second)
-        # else:
-        #   speed = '0 B/s'
+        if self.old_total_downloaded > 0:
+          bytes_per_second = (total_downloaded - self.old_total_downloaded)
+          speed = _Humanize(bytes_per_second)
+        else:
+          speed = '0 B/s'
         self.old_total_downloaded = total_downloaded
         percent_completed = float(total_downloaded)/total_to_download
         formatted_percent = format(round((percent_completed * 100),
                                    ndigits=2), '.2f')
-        # progress = ('%s%%  %s   \r' % (formatted_percent, speed))
-        progress = ('%s%%   \r' % formatted_percent)
+        progress = ('%s%%  %s   \r' % (formatted_percent, speed))
         sys.stdout.write(progress)
         sys.stdout.flush()
 
     def _Humanize(bps):
-      mbps = round(((bps / (1024**2)) * 8), ndigits=1)
+      mbps = round(((bps / (1024**2)) / 8), ndigits=1)
       if mbps >= 1:
         return (str(mbps) + ' Mb/s')
-      kbps = round(((bps / 1024) * 8), ndigits=1)
+      kbps = round(((bps / 1024) / 8), ndigits=1)
       if kbps >= 1:
         return (str(kbps) + ' Kb/s')
       bps = round(bps, ndigits=1)
@@ -130,7 +134,7 @@ class DownloadManager(object):
       if self.download_file:
         curl_handle.setopt(pycurl.WRITEDATA, download_file)
         curl_handle.setopt(pycurl.NOPROGRESS, 0)
-        curl_handle.setopt(pycurl.PROGRESSFUNCTION, _ShowProgress)
+        curl_handle.setopt(pycurl.PROGRESSFUNCTION, _SpawnProgress)
         print("Downloading %s:" % self.filename)
       else:
         curl_handle.setopt(pycurl.WRITEDATA, self.destination)
