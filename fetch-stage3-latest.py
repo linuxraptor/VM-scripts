@@ -8,6 +8,8 @@ from __future__ import unicode_literals
 import os
 import sys
 import time
+import errno
+import hashlib
 import argparse
 import threading
 import pycurl
@@ -30,16 +32,18 @@ MIRROR = str(MIRRORS[0] + RELEASE_DIR)
 
 class Error(Exception):
   """Base error class."""
-  pass
 
 
 class InputError(Error):
   """Exception raised for errors in the input."""
-  pass
 
 
 class CurlError(Error):
   """Exception raised for curl URL errors."""
+
+
+class ChecksumVerifyError(Error):
+  """Exception raised when checksum does not match."""
 
 
 def ParseArguments():
@@ -71,14 +75,20 @@ class DownloadManager(object):
     url = (MIRROR + stage3_location)
     return url
 
-  def Download(self, working_dir=os.getcwd()):
-    self.url = self.FindStage3()
+  def _Download(self, working_dir, url):
+    self.url = url
     self.filename = self.url.split('/')[-1]
     self.download_file = working_dir + '/' + self.filename
     self.destination = 'filehandle'
     self._Curl()
-    if self.destination:
-      self.destination.close()
+    return self.download_file
+
+  def DownloadStage3(self, working_dir):
+    url = self.FindStage3()
+    stage3_file = self._Download(working_dir, url)
+    digests_url = url + '.DIGESTS'
+    digests_file = self._Download(working_dir, digests_url)
+    return stage3_file, digests_file
 
   def _Curl(self):
     """Handles the bare pyCurl interface.."""
@@ -110,12 +120,16 @@ class DownloadManager(object):
         sys.stdout.flush()
 
     def _Humanize(bps):
-      mbps = round(((bps / (1024**2)) / 8), ndigits=1)
+      gbps = round(((bps / (1024**3)) * 8), ndigits=1)
+      if gbps >= 1:
+        return (str(mbps) + ' Gb/s')
+      mbps = round(((bps / (1024**2)) * 8), ndigits=1)
       if mbps >= 1:
         return (str(mbps) + ' Mb/s')
-      kbps = round(((bps / 1024) / 8), ndigits=1)
+      kbps = round(((bps / 1024) * 8), ndigits=1)
       if kbps >= 1:
         return (str(kbps) + ' Kb/s')
+      # Let's not turn bytes into bits. It's small enough already.
       bps = round(bps, ndigits=1)
       return (str(bps) + ' B/s')
 
@@ -154,9 +168,41 @@ class DownloadManager(object):
     curl_handle.close()
     return self.destination
 
+  def Verify(self, working_dir, file_to_verify,
+             digests, blocksize=32768):
+    """Verify the download via mirror-provided '.DIGESTS' file."""
+    for location in working_dir, file_to_verify, digests:
+      if not os.path.isfile(self.download_file):
+        raise FileNotFoundError(
+            errno.ENOENT, os.strerror(errno.ENOENT), location)
+    print('Comparing checksums:')
+    sha512 = hashlib.sha512()
+    file_handle = open(file_to_verify, 'rb')
+    chunk = file_handle.read(blocksize)
+    while len(chunk) > 0:
+      sha512.update(chunk)
+      chunk = file_handle.read(blocksize)
+    sha512_sum = sha512.hexdigest()
+    digests_handle = open(digests, 'rt+')
+    for line in digests_handle:
+      if 'SHA512' in line:
+        sha512_source = digests_handle.next().split(' ')[0]
+        break
+    relative_filename = file_to_verify.split('/')[-1]
+    relative_digests = digests.split('/')[-1]
+    print('\n%s:\n%s...\n%s:\n%s...\n' % 
+          (relative_filename, sha512_sum[0:64],
+           relative_digests, sha512_source[0:64]))
+    if sha512_sum == sha512_source:
+      print('SHA512 Checksum verified. :-)')
+    else:
+      error_str = 'Download checksum failed. See details above.'
+      raise ChecksumVerifyError(error_str)
+
 
 if __name__ == "__main__":
   arguments = ParseArguments()
   download_manager = DownloadManager()
-  download_manager.Download(arguments.working_dir)
+  stage3, digests = download_manager.DownloadStage3(arguments.working_dir)
+  download_manager.Verify(arguments.working_dir, stage3, digests)
 
