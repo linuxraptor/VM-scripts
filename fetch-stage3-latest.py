@@ -42,6 +42,10 @@ class CurlError(Error):
   """Exception raised for curl URL errors."""
 
 
+class FileNotFoundError(OSError):
+  """For when the file or folder does not exist."""
+
+
 class ChecksumVerifyError(Error):
   """Exception raised when checksum does not match."""
 
@@ -61,27 +65,24 @@ class DownloadManager(object):
   """Manages pyCurl."""
 
   def __init__(self):
-    self.download_file = ''
     self.old_total_downloaded = 0
     self.systime = 0
 
   def FindStage3(self):
-    self.url = str(MIRROR + CURRENT_VER)
-    self.destination = BytesIO()
-    self._Curl()
-    response = self.destination.getvalue()
+    url = str(MIRROR + CURRENT_VER)
+    destination = BytesIO()
+    self._Curl(url, destination)
+    response = destination.getvalue()
     ascii_response = response.decode()
     stage3_location = ascii_response.splitlines()[-1].split(' ')[0]
     url = (MIRROR + stage3_location)
     return url
 
   def _Download(self, working_dir, url):
-    self.url = url
-    self.filename = self.url.split('/')[-1]
-    self.download_file = working_dir + '/' + self.filename
-    self.destination = 'filehandle'
-    self._Curl()
-    return self.download_file
+    filename = url.split('/')[-1]
+    destination = working_dir + '/' + filename
+    self._Curl(url, destination, filename)
+    return destination
 
   def DownloadStage3(self, working_dir):
     url = self.FindStage3()
@@ -90,14 +91,15 @@ class DownloadManager(object):
     digests_file = self._Download(working_dir, digests_url)
     return stage3_file, digests_file
 
-  def _Curl(self):
+  def _Curl(self, url, destination, filename=None):
     """Handles the bare pyCurl interface.."""
-    def _CurlCleanup():
-      if os.path.isfile(self.download_file):
-        os.remove(self.download_file)
-      self.destination = None
+    def _CurlCleanup(destination):
+      if os.path.isfile(destination):
+        os.remove(destination)
+      destination = None
 
-    def _SpawnProgress(total_to_download, total_downloaded, *args, **kwargs):
+    def _SpawnProgress(total_to_download, total_downloaded, 
+                       dummy_total_to_upload, dummy_total_uploaded):
       current_time = int(time.time())
       if current_time != self.systime:
         self.systime = current_time
@@ -110,7 +112,7 @@ class DownloadManager(object):
           bytes_per_second = (total_downloaded - self.old_total_downloaded)
           speed = _Humanize(bytes_per_second)
         else:
-          speed = '0 B/s'
+          speed = ''
         self.old_total_downloaded = total_downloaded
         percent_completed = float(total_downloaded)/total_to_download
         formatted_percent = format(round((percent_completed * 100),
@@ -122,7 +124,7 @@ class DownloadManager(object):
     def _Humanize(bps):
       gbps = round(((bps / (1024**3)) * 8), ndigits=1)
       if gbps >= 1:
-        return (str(mbps) + ' Gb/s')
+        return (str(gbps) + ' Gb/s')
       mbps = round(((bps / (1024**2)) * 8), ndigits=1)
       if mbps >= 1:
         return (str(mbps) + ' Mb/s')
@@ -133,8 +135,8 @@ class DownloadManager(object):
       bps = round(bps, ndigits=1)
       return (str(bps) + ' B/s')
 
-    if self.destination == 'filehandle':
-      download_file = open(self.download_file, 'wb')
+    if filename:
+      download_file = open(destination, 'wb')
     curl_handle = pycurl.Curl()
     curl_handle.setopt(pycurl.FOLLOWLOCATION, 1)
     curl_handle.setopt(pycurl.MAXREDIRS, 5)
@@ -142,37 +144,37 @@ class DownloadManager(object):
     curl_handle.setopt(pycurl.TIMEOUT, 300)
     curl_handle.setopt(pycurl.NOSIGNAL, 1)
     try:
-      curl_handle.setopt(pycurl.URL, self.url)
-      if self.download_file:
+      curl_handle.setopt(pycurl.URL, url)
+      if filename:
         curl_handle.setopt(pycurl.WRITEDATA, download_file)
         curl_handle.setopt(pycurl.NOPROGRESS, 0)
         curl_handle.setopt(pycurl.PROGRESSFUNCTION, _SpawnProgress)
-        print("Downloading %s:" % self.filename)
+        print("Downloading %s:" % filename)
       else:
-        curl_handle.setopt(pycurl.WRITEDATA, self.destination)
+        curl_handle.setopt(pycurl.WRITEDATA, destination)
       curl_handle.perform()
     except pycurl.error as e:
-      _CurlCleanup()
+      _CurlCleanup(destination)
       if e.args[0] == 42:
         print('KeyboardInterrupt')
-        _CurlCleanup()
+        _CurlCleanup(destination)
         return
       raise CurlError('Download failed: ', e)
     http_code = curl_handle.getinfo(pycurl.HTTP_CODE)
     # if http_code >= 400
       # try another server. use a retry code.
     if http_code < 200 or http_code >= 300:
+      _CurlCleanup(destination)
       raise CurlError('Received HTTP error code: ', http_code)
-      _CurlCleanup()
   
     curl_handle.close()
-    return self.destination
+    return destination
 
   def Verify(self, working_dir, file_to_verify,
              digests, blocksize=32768):
     """Verify the download via mirror-provided '.DIGESTS' file."""
     for location in working_dir, file_to_verify, digests:
-      if not os.path.isfile(self.download_file):
+      if not os.path.isfile(location) and not os.path.isdir(location):
         raise FileNotFoundError(
             errno.ENOENT, os.strerror(errno.ENOENT), location)
     print('Comparing checksums:')
@@ -203,6 +205,6 @@ class DownloadManager(object):
 if __name__ == "__main__":
   arguments = ParseArguments()
   download_manager = DownloadManager()
-  stage3, digests = download_manager.DownloadStage3(arguments.working_dir)
-  download_manager.Verify(arguments.working_dir, stage3, digests)
+  stage3, digest_file = download_manager.DownloadStage3(arguments.working_dir)
+  download_manager.Verify(arguments.working_dir, stage3, digest_file)
 
