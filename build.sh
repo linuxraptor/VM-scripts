@@ -36,6 +36,7 @@ perl -pi -w -e \
     's/^.*(DYUZU_ENABLE_LTO.*)$/      -DYUZU_ENABLE_LTO=ON -DYUZU_TESTS=OFF \\/g;' \
     .ci/scripts/linux/docker.sh
 
+docker pull yuzuemu/build-environments:linux-fresh
 set -x
 docker run \
     -e CCACHE_DIR=/yuzu/ccache \
